@@ -1,0 +1,91 @@
+name: vaynex
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: vaynex-postgres
+    environment:
+      POSTGRES_DB: vaynex
+      POSTGRES_USER: vaynex
+      POSTGRES_PASSWORD: vaynex
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/20-vaynex-test-db.sql:/docker-entrypoint-initdb.d/20-vaynex-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaynex -d vaynex"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaynex-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    container_name: vaynex-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+asyncpg://vaynex:vaynex@postgres:5432/vaynex
+      REDIS_URL: redis://redis:6379/0
+      TEST_DATABASE_URL: postgresql+asyncpg://vaynex:vaynex@postgres:5432/vaynex_test
+      TEST_REDIS_URL: redis://redis:6379/15
+      RUN_MIGRATIONS: "true"
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
+  # Optional frontend container. Not started by default:
+  #   docker compose --profile web up --build
+  web:
+    profiles: ["web"]
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: vaynex-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
